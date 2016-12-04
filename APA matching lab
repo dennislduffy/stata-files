@@ -1,0 +1,257 @@
+/***************************************************************************
+PA5390 Fall 2013 Econometrics for Program and Policy Evaluation
+Humphrey School of Public Affairs, University of Minnesota
+Professor Janna Johnson
+
+HOL 3 - Panel Data
+
+This HOL shows you how to estimate treatment effects using propensity score 
+matching.  The question we are investigating is "What is the effect of race (NH white vs. non-white)
+on food stamp participation?".  We will first match only on discrete variables
+and then add a continuous variable (household income).
+
+The data we are using is from the 2013 March Current Population Survey.  We
+are investigating a household-level question, so the dataset contains information
+on the household or the household head.  The dataset contains all single-family
+households headed by an individual aged 25-60.
+*******************************************************************************/
+
+clear *
+cap log close
+set more off
+cd ""
+
+log using Lab_Matching, text replace
+
+use foodstampdata
+
+/**********************  DISCRETE MATCHING  ********************************/
+
+/******************
+First we will match on discrete variables only.  These will be
+number of kids in HH (nchild)
+Education of HH head (educ, 1=LTHS, 2=HS degree, 3=somecol, 4=colplus)
+HH size (famsize, 8=8+)
+Marital status of head (marst, 1=married, 2=separated/divorced/widowed, 3=never married)
+Poverty status of head (poverty)
+Disability status of head (disabwrk)
+Sex of HH head (sex)
+Employment status of head (empstat: 1=employed, 2=unemployed, 3=NILF)
+Medicaid recipiency (himcaid)
+*************************************/
+/* Make sure our sample is single-family HHs with head aged 25-60 */
+des
+tab nfams
+sum age
+tab relate
+
+/* Look at our variable of interest */
+tab nonwhite
+
+/* Look at the vars we are matching on */
+tab nchild nonwhite, nofreq col
+tab educ nonwhite, nofreq col
+tab famsize nonwhite, nofreq col
+tab sex nonwhite, nofreq col
+tab marst nonwhite, nofreq col
+tab pov nonwhite, nofreq col
+tab disab nonwhite, nofreq col
+tab empstat nonwhite, nofreq col
+tab himcaid nonwhite, nofreq col
+
+/* Look at weights */
+sum hwt
+tab educ
+tab educ [aw=hwt]
+
+/************  Estimate Propensity Score (cell estimator) **************/
+egen cells = group(nchild educ famsize sex marst pov disab empstat himcaid)
+egen n_nw = total(nonwhite*hwt), by(cells)
+egen n_w = total((1-nonwhite)*hwt), by(cells)
+gen p_nw = n_nw/(n_w+n_nw)
+
+sum p_nw
+count if p_nw==0
+count if p_nw==1
+
+/* Form weights for ATET */
+
+gen atetwt = hwt*((p_nw)/(1-(p_nw))) if nonwhite==0 & p_nw>0
+replace atetwt = hwt if nonwhite==1 & p_nw<1
+
+/* Check if weights are doing right thing */
+
+tab educ nonwhite [aw=hwt]if atetwt!=., col nofreq
+tab educ nonwhite [aw=atetwt], col nofreq
+
+tab nchild nonwhite [aw=hwt] if atetwt!=., col nofreq
+tab nchild nonwhite [aw=atetwt], col nofreq
+
+tab famsize nonwhite [aw=hwt] if atetwt!=., col nofreq
+tab famsize nonwhite [aw=atetwt], col nofreq
+
+tab sex nonwhite [aw=hwt] if atetwt!=., col nofreq
+tab sex nonwhite [aw=atetwt], col nofreq
+
+/* Run regressions */
+*naive
+reg foodstmp nonwhite if atetwt!=. [aw=hwt]
+
+*matching ATET
+reg foodstmp nonwhite [aw=atetwt]
+
+*matching ATET w/other regressors 
+reg foodstmp nonwhite nchild educ famsize sex marst pov disab empstat himcaid [aw=atetwt]
+
+/****************************  CONTINUOUS MATCHING  ********************************/
+
+/*  Now we're matching on income (hhincome) plus all the previous stuff.  Income
+is continuous so we use a polynomial */
+
+gen inc2 = hhinc^2
+gen inc3 = hhinc^3
+gen inc4 = hhinc^4
+gen inc5 = hhinc^5
+gen inc6 = hhinc^6
+gen inc7 = hhinc^7
+
+local first="hhinc"
+local second="hhinc inc2"
+local third="hhinc inc2 inc3"
+local fourth="hhinc inc2 inc3 inc4"
+local fifth="hhinc inc2 inc3 inc4 inc5"
+local sixth="hhinc inc2 inc3 inc4 inc5 inc6"
+local seventh="hhinc inc2 inc3 inc4 inc5 inc6 inc7" 
+local otherstuff nchild educ famsize sex marst pov disab empstat himcaid
+
+/* Picking the order of the polynomial + functional form*/
+
+*first use LPM
+qui reg nonwhite `otherstuff' `first'
+predict pnw_lpm_first, xb
+
+qui reg nonwhite `otherstuff' `second'
+predict pnw_lpm_second, xb
+
+qui reg nonwhite `otherstuff' `third'
+predict pnw_lpm_third, xb
+
+qui reg nonwhite `otherstuff' `fourth'
+predict pnw_lpm_fourth, xb
+
+qui reg nonwhite `otherstuff' `fifth'
+predict pnw_lpm_fifth, xb
+
+qui reg nonwhite `otherstuff' `sixth'
+predict pnw_lpm_sixth, xb
+
+qui reg nonwhite `otherstuff' `seventh'
+predict pnw_lpm_seventh, xb
+
+corr nonwhite pnw_lpm_first pnw_lpm_second pnw_lpm_third pnw_lpm_fourth pnw_lpm_fifth pnw_lpm_sixth pnw_lpm_seventh if e(sample), m
+
+*logit
+
+local first="hhinc"
+local second="hhinc inc2"
+local third="hhinc inc2 inc3"
+local fourth="hhinc inc2 inc3 inc4"
+local fifth="hhinc inc2 inc3 inc4 inc5"
+local sixth="hhinc inc2 inc3 inc4 inc5 inc6"
+local seventh="hhinc inc2 inc3 inc4 inc5 inc6 inc7" 
+local otherstuff nchild educ famsize sex marst pov disab empstat himcaid
+
+qui logit nonwhite `otherstuff' `first'
+predict pnw_logit_first, pr
+
+qui logit nonwhite `otherstuff' `second'
+predict pnw_logit_second, pr
+
+qui logit nonwhite `otherstuff' `third'
+predict pnw_logit_third, pr
+
+qui logit nonwhite `otherstuff' `fourth'
+predict pnw_logit_fourth, pr
+
+qui logit nonwhite `otherstuff' `fifth'
+predict pnw_logit_fifth, pr
+
+qui logit nonwhite `otherstuff' `sixth'
+predict pnw_logit_sixth, pr
+
+qui logit nonwhite `otherstuff' `seventh'
+predict pnw_logit_seventh, pr
+
+corr nonwhite pnw_logit_first pnw_logit_second pnw_logit_third pnw_logit_fourth pnw_logit_fifth pnw_logit_sixth pnw_logit_seventh if e(sample), m
+
+*probit
+
+local first="hhinc"
+local second="hhinc inc2"
+local third="hhinc inc2 inc3"
+local fourth="hhinc inc2 inc3 inc4"
+local fifth="hhinc inc2 inc3 inc4 inc5"
+local sixth="hhinc inc2 inc3 inc4 inc5 inc6"
+local seventh="hhinc inc2 inc3 inc4 inc5 inc6 inc7" 
+local otherstuff nchild educ famsize sex marst pov disab empstat himcaid
+
+qui probit nonwhite `otherstuff' `first'
+predict pnw_probit_first, pr
+
+qui probit nonwhite `otherstuff' `second'
+predict pnw_probit_second, pr
+
+qui probit nonwhite `otherstuff' `third'
+predict pnw_probit_third, pr
+
+qui probit nonwhite `otherstuff' `fourth'
+predict pnw_probit_fourth, pr
+
+qui probit nonwhite `otherstuff' `fifth'
+predict pnw_probit_fifth, pr
+
+qui probit nonwhite `otherstuff' `sixth'
+predict pnw_probit_sixth, pr
+
+qui probit nonwhite `otherstuff' `seventh'
+predict pnw_probit_seventh, pr
+
+corr nonwhite pnw_probit_first pnw_probit_second pnw_probit_third pnw_probit_fourth pnw_probit_fifth pnw_probit_sixth pnw_probit_seventh if e(sample), m
+
+/* Looks like logit with seventh-order polynomial wins */
+
+
+/* Estimate propensity score */
+
+local seventh="hhinc inc2 inc3 inc4 inc5 inc6 inc7" 
+local otherstuff nchild educ famsize sex marst pov disab empstat himcaid
+
+qui logit nonwhite `otherstuff' `seventh'
+predict p_nw_l, pr
+
+/* trim area of common support */
+sum p_nw_l if nonwhite==1
+sum p_nw_l if nonwhite==0
+
+replace p_nw_l=. if p_nw_l<0.0895
+replace p_nw_l=. if p_nw_l>0.951
+
+/* Form weights for ATET */
+gen atetwt_l = hwt*((p_nw_l)/(1-(p_nw_l))) if nonwhite==0 & p_nw_l>0
+replace atetwt_l = hwt if nonwhite==1 
+
+/* Run regressions */
+*naive
+reg foodstmp nonwhite if atetwt_l!=. [aw=hwt]
+
+*matching ATET
+reg foodstmp nonwhite [aw=atetwt_l]
+
+*matching ATET w/other regressors 
+
+local seventh="hhinc inc2 inc3 inc4 inc5 inc6 inc7" 
+
+reg foodstmp nonwhite nchild educ famsize sex marst pov disab empstat himcaid `seventh' [aw=atetwt_l]
+
+*compare to ATET cell estimator 
+reg foodstmp nonwhite nchild educ famsize sex marst pov disab empstat himcaid [aw=atetwt]
